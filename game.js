@@ -62,8 +62,10 @@ function Pulse (startNodeID, beatsPerMove) {
     Instrument.call(this);
 
     this.currentNode = findNodeByID(startNodeID);
+    this.previousNode = undefined;
     this.beatsPerMove = beatsPerMove;
     this.beatCountdown = 0;
+    this.initialized = false;
 
     this.x = this.currentNode.x;
     this.y = this.currentNode.y;
@@ -125,9 +127,47 @@ function Pulse (startNodeID, beatsPerMove) {
             this.fuseSprite.rotation = -(Math.PI / 2);
             this.fuseTween = game.add.tween(this.fuseSprite).to({rotation: (3 * (Math.PI / 2))}, conductor.beat * this.beatsPerMove);
             this.fuseTween.start();
+
+            if (this.initialized) {
+                var nodeIDsToMove = [];
+                for (var i = 0; i < this.currentNode.edges.length; i++) {
+                    var otherNode = this.currentNode.edges[i].getOtherNode(this.currentNode);
+                    if (this.currentNode.edges[i].active && otherNode !== this.previousNode) {
+                        // this.move(otherNode.id);
+                        nodeIDsToMove.push(otherNode.id);
+                    }
+                }
+
+                for (var i = 0; i < nodeIDsToMove.length; i++) {
+                    // this.move(nodeIDsToMove[i]);
+                    if (i === nodeIDsToMove.length-1) {
+                        this.move(nodeIDsToMove[i]);
+                    } else {
+                        var newPulse = new Pulse(this.currentNode.id, this.beatsPerMove);
+                        newPulse.move(nodeIDsToMove[i]);
+                    }
+                }
+            } else {
+                this.initialized = true;
+            }
+
         } else {
             this.spriteOutTweens[this.beatsPerMove - this.beatCountdown - 1].start();
         }
+    }
+
+    this.move = function (newNodeID) {
+        this.previousNode = this.currentNode;
+        this.currentNode = findNodeByID(newNodeID);
+
+        this.x = this.currentNode.x;
+        this.y = this.currentNode.y;
+
+        // this.sprite.x = this.x;
+        // this.sprite.y = this.y;
+
+        var newTween = game.add.tween(this.sprite).to({x: this.x, y: this.y}, 400, Phaser.Easing.Exponential.Out);
+        newTween.start();
     }
 
     pulseList.push(this);
@@ -158,7 +198,25 @@ function Node (id, x, y) {
         this.beatTween.start();
     }
 
+    this.hasSwitcherEdge = function (switcherID) {
+        for (var i = 0; i < this.edges.length; i++) {
+            if (this.edges[i].switcherID === switcherID) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     nodeList.push(this);
+}
+
+function Switcher (id, x, y, switcherTint) {
+    Node.call(this, id, x, y);
+
+    this.isSwitcher = true;
+    this.switcherTint = switcherTint;
+
+    this.sprite.tint = switcherTint;
 }
 
 function findNodeByID (id) {
@@ -170,7 +228,7 @@ function findNodeByID (id) {
 }
 
 var edgeList = [];
-function Edge (node1ID, node2ID) {
+function Edge (node1ID, node2ID, switcherID) {
     Instrument.call(this);
     
     this.nodeIDs = [node1ID, node2ID];
@@ -180,16 +238,76 @@ function Edge (node1ID, node2ID) {
     this.x = node1.x;
     this.y = node1.y;
     this.width = Phaser.Math.distance(node1.x, node1.y, node2.x, node2.y);
-    this.height = 5;
+    this.height = 55;
     this.angle = Phaser.Math.angleBetween(node1.x, node1.y, node2.x, node2.y);
+
+    this.active = true;
+    if (switcherID !== undefined) {
+        this.switcherID = switcherID;
+    }
 
     this.sprite = game.add.sprite(this.x, this.y, edgeTexture);
     this.sprite.anchor.setTo(0, 0.5);
     this.sprite.width = this.width;
     this.sprite.height = this.height;
     this.sprite.rotation = this.angle;
-    spriteLayer.add(this.sprite);
+    edgeLayer.add(this.sprite);
 
+    this.sprite.inputEnabled = true;
+
+    this.sprite.events.onInputDown.add(function() {
+        if (this.switcherID !== undefined) {
+            var switcher = findNodeByID(this.switcherID);
+            for (var i = 0; i < switcher.edges.length; i++) {
+                if (switcher.edges[i].switcherID === this.switcherID) {
+                    switcher.edges[i].deactivate();
+                }
+            }
+            this.activate();
+        }
+    }, this);
+
+    this.addToNode = function (node) {
+        node.edges.push(this);
+    }
+
+    this.deactivate = function () {
+        this.active = false;
+        this.sprite.alpha = 0.3;
+    }
+
+    this.activate = function () {
+        this.active = true;
+        this.sprite.alpha = 1;
+    }
+
+    this.getOtherNode = function (originalNode) {
+        if (originalNode.id === this.nodeIDs[0]) {
+            return findNodeByID(this.nodeIDs[1]);
+        } else {
+            return findNodeByID(this.nodeIDs[0]);
+        }
+    }
+
+    this.findSwitcherNode = function () {
+        for (var i = 0; i < this.nodeIDs.length; i++) {
+            var curNode = findNodeByID(this.nodeIDs[i]);
+            if (curNode.isSwitcher) {
+                return curNode;
+            }
+        }
+    }
+
+    if (this.switcherID !== undefined) {
+        var switcherNode = findNodeByID(this.switcherID);
+        this.sprite.tint = switcherNode.switcherTint;
+        if (switcherNode.hasSwitcherEdge(this.switcherID)) {
+            this.deactivate();
+        }
+    }
+
+    this.addToNode(node1);
+    this.addToNode(node2);
     edgeList.push(this);
 }
 
@@ -214,8 +332,11 @@ var pulseTextures = {
     lines: {},
 };
 
+var edgeLayer;
 var spriteLayer;
 var HUDLayer;
+
+var pointerDown;
 
 function create() {
 
@@ -227,6 +348,12 @@ function create() {
     // tempGraphics.endFill();
     // blackSquare = tempGraphics.generateTexture();
 
+    game.input.mouse.capture = true;
+
+    if (game.input.activePointer.isDown) {
+
+    }
+
     var tempGraphics = game.add.graphics(0, 0);
     tempGraphics.beginFill(0xFFFFFF);
     tempGraphics.drawEllipse(10, 10, 10, 10);
@@ -235,8 +362,9 @@ function create() {
     tempGraphics.destroy();
 
     var tempGraphics2 = game.add.graphics(0, 0);
+    tempGraphics2.drawRect(0, 0, 1024, 55);
     tempGraphics2.beginFill(0xFFFFFF);
-    tempGraphics2.drawRect(0, 0, 1024, 5);
+    tempGraphics2.drawRect(0, 25, 1024, 5);
     tempGraphics2.endFill();
     edgeTexture = tempGraphics2.generateTexture();
     tempGraphics2.destroy();
@@ -289,6 +417,7 @@ function create() {
 
     beatSound = game.add.audio("beat_sfx");
 
+    edgeLayer = game.add.group();
     spriteLayer = game.add.group();
     HUDLayer = game.add.group();
 
@@ -297,24 +426,60 @@ function create() {
 
     conductor = new Conductor(120);
 
-    new Node(0, 100, 200);
-    new Node(1, 200, 200);
-    new Node(2, 300, 100);
-    new Node(3, 400, 300);
-    new Node(4, 500, 200);
-    new Node(5, 600, 200);
-    new Edge(0, 1);
-    new Edge(1, 2);
-    new Edge(2, 3);
-    new Edge(3, 4);
-    new Edge(4, 5);
+    // new Node(0, 100, 200);
+    // new Node(1, 200, 200);
+    // new Node(2, 300, 100);
+    // new Node(3, 400, 300);
+    // new Node(4, 500, 200);
+    // new Node(5, 600, 200);
+    // new Edge(0, 1);
+    // new Edge(1, 2);
+    // new Edge(2, 3);
+    // new Edge(3, 4);
+    // new Edge(4, 5);
 
-    new Pulse(0, 1);
-    new Pulse(1, 2);
-    new Pulse(2, 3);
-    new Pulse(3, 4);
-    new Pulse(4, 5);
-    new Pulse(5, 6);
+    // new Pulse(0, 4);
+    // new Pulse(1, 2);
+    // new Pulse(2, 3);
+    // new Pulse(3, 4);
+    // new Pulse(4, 5);
+    // new Pulse(5, 6);
+
+    // new Node(0, 100, 200);
+    // new Switcher(1, 200, 200, 0x77FF77);
+    // new Node(2, 200, 100);
+    // new Node(3, 300, 200);
+    // new Node(4, 200, 300);
+    // new Node(5, 300, 100);
+    // new Node(6, 400, 200);
+    // new Node(7, 300, 300);
+    // new Edge(0, 1);
+    // new Edge(1, 2, true);
+    // new Edge(1, 3, true);
+    // new Edge(1, 4, true);
+    // new Edge(2, 5);
+    // new Edge(3, 6);
+    // new Edge(4, 7);
+    // new Pulse(0, 4);
+
+    new Node(0, 100, 100);
+    new Switcher(1, 200, 100, 0xFF7777);
+    new Node(2, 300, 100);
+    new Switcher(3, 300, 200, 0x77FF77);
+    new Node(4, 400, 200);
+    new Switcher(5, 400, 300, 0x7777FF);
+    new Node(6, 500, 300);
+    new Node(7, 600, 300);
+    new Node(8, 600, 400);
+    new Edge(0, 1);
+    new Edge(1, 2, 1);
+    new Edge(1, 3, 1);
+    new Edge(3, 4, 3);
+    new Edge(3, 5, 3);
+    new Edge(5, 6, 5);
+    new Edge(6, 7);
+    new Edge(5, 8, 5);
+    new Pulse(0, 4);
 }
 
 function update() {
